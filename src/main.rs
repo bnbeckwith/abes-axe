@@ -90,59 +90,30 @@ fn build_cohorts(repo: &Repository, interval: i64, cohortfmt: &str) -> Result<Ve
         let cohort_name = dt.format(cohortfmt);
         let current_tree = commit.tree().chain_err(|| "Couldn't retrieve tree")?;
 
+        let mut diff_opts = git2::DiffOptions::new();
+        diff_opts.include_unmodified(false)
+            .ignore_filemode(true)
+            .context_lines(0);
+
         let diff = match last_commit  {
             Some(ref lc) => {
                 let last_tree = lc.tree().chain_err(|| "Couldn't retrieve tree")?;
-                repo.diff_tree_to_tree(Some(&last_tree), Some(&current_tree), None)
+                repo.diff_tree_to_tree(Some(&last_tree), Some(&current_tree), Some(&mut diff_opts))
                     .chain_err(|| "Couldn't diff trees!")?
             },
             None => {
-                repo.diff_tree_to_tree(None, Some(&current_tree), None)
+                repo.diff_tree_to_tree(None, Some(&current_tree), Some(&mut diff_opts))
                     .chain_err(|| "Couldn't diff None to current tree")?
             }
         };
 
-        last_commit = Some(commit);
-
-        let file_callback = &mut |d: git2::DiffDelta, n: f32| {
-            if let Some(path) = d.new_file().path() {
-                let mut b_opts = git2::BlameOptions::new();
-                b_opts.newest_commit(id);
-
-                let blame = match repo.blame_file(path , Some(&mut b_opts)) {
-                    Ok(blame) => blame,
-                    Err(x) => {
-                        println!("ERROR: {}", x);
-                        return false
-                    }
-                };
-
-                for hunk in blame.iter() {
-                    let old_cohort_oid = hunk.orig_commit_id();
-                    let old_commit_dt = commit_date_time(&repo, old_cohort_oid).unwrap();
-                    let old_cohort = old_commit_dt.format(cohortfmt);
-                    let lines = hunk.lines_in_hunk();
-                    match d.status() {
-                        Delta::Added => {
-                        println!("Added {} lines, cohort {}", lines, cohort_name);
-                        },
-                        Delta::Deleted => {
-                        println!("Delete {} lines from cohort {} during cohort {}", lines, old_cohort, cohort_name);
-                        },
-                        Delta::Modified => {
-                            println!("Modified {} lines from cohort {} during cohort {}", lines, old_cohort, cohort_name);
-                        },
-                        _ => { println!("*** IGNORING")}
-                    }
-                }
-            }else {
-               println!("HANDLE THIS CASE"); 
+        for delta in diff.deltas() {
+            match delta.status() {
+                _ => {println!("UNHANDLED CASE")}
             }
+        }
 
-            true
-        };
-
-        diff.foreach(file_callback, None, None, None);
+        last_commit = Some(commit);
 
         println!("{}",cohort_name);
     }
