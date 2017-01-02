@@ -1,7 +1,7 @@
 [package]
 name = "rusty-git-of-thesus"
 version = "0.1.0"
-authors = ["Ben Beckwith <ben@mutuallyhuman.com>"]
+authors = ["Ben Beckwith <bnbeckwith@gmail.com>"]
 
 [dependencies]
 error-chain = "0.7.1"
