@@ -63,76 +63,6 @@ fn get_revwalk_ids(repo: &Repository) -> Result<Vec<Oid>> {
     Ok(revwalk.map(|i| i.unwrap()).collect())
 }
 
-fn build_cohorts(repo: &Repository, interval: i64, cohortfmt: &str) -> Result<Vec<Cohort>> {
-    let mut ids: Vec<Oid> = get_revwalk_ids(repo)
-        .chain_err(|| "Unable to obtain revwalk ids")?;
-    ids.reverse();
-
-    let mut iterations: Vec<Cohort> = Vec::new();
-    iterations.push(Cohort::new());
-    let duration = Duration::seconds(interval);
-    let mut dt = commit_date_time(&repo, ids[0])? + duration;
-    let mut last_commit: Option<Commit> = None;
-
-    for id in ids {
-        let commit_dt = commit_date_time(&repo, id)?;
-        if commit_dt >= (dt + duration) {
-            dt = commit_dt
-        } else {
-            continue;
-        }
-        let commit = repo.find_commit(id)
-            .chain_err(|| format!("Couldn't find commit from id: {}", id))?;
-        let cohort_name = dt.format(cohortfmt);
-        let current_tree = commit.tree().chain_err(|| "Couldn't retrieve tree")?;
-        let mut diff_opts = git2::DiffOptions::new();
-        diff_opts.include_unmodified(false)
-            .ignore_filemode(true)
-            .context_lines(0);
-
-        let diff = match last_commit {
-            Some(ref lc) => {
-                let last_tree = lc.tree().chain_err(|| "Couldn't retrieve tree")?;
-                repo.diff_tree_to_tree(Some(&last_tree), Some(&current_tree), Some(&mut diff_opts))
-                    .chain_err(|| "Couldn't diff trees!")?
-            }
-            None => {
-                repo.diff_tree_to_tree(None, Some(&current_tree), Some(&mut diff_opts))
-                    .chain_err(|| "Couldn't diff None to current tree")?
-            }
-        };
-
-        let mut file_cb = |_d: git2::DiffDelta, _n: f32| {
-            true
-        };
-
-        let mut hunk_cb =
-            |d: git2::DiffDelta, hunk: git2::DiffHunk| {
-                let oldname = d.old_file().path().map(|e| e.to_str().unwrap()).unwrap_or("[empty]");
-                let newname = d.new_file().path().map(|e| e.to_str().unwrap()).unwrap_or("[empty]");
-                if oldname != newname {
-                    println!("{:?} : {:?} : ostart: {}, nstart: {}, olines: {}, nlines: {}",
-                             oldname,
-                             newname,
-                             hunk.old_start(),
-                             hunk.new_start(),
-                             hunk.old_lines(),
-                             hunk.new_lines()
-                    );
-                }
-                true
-            };
-        
-        diff.foreach(&mut file_cb, None, Some(&mut hunk_cb), None)
-            .chain_err(|| "Couldn't do diff")?;
-        
-        last_commit = Some(commit);
-
-        println!("{}", cohort_name);
-    }
-
-    Ok(iterations)
-}
 
 fn get_blob_ids(repo: &Repository, commits: &Vec<Commit>) -> Result<HashSet<Oid>> {
     let mut entries = HashSet::new();
@@ -154,21 +84,12 @@ fn get_blob_ids(repo: &Repository, commits: &Vec<Commit>) -> Result<HashSet<Oid>
 
 fn run(app_config: App) -> Result<()> {
 
-    let matches = app_config.get_matches();
-    let interval = matches.value_of("interval")
-        .unwrap()
-        .parse::<i64>()
-        .ok()
-        .unwrap();
-
-    let repo_path = matches.value_of("REPO").unwrap();
-    let repo = Repository::open(repo_path)
-        .chain_err(|| format!("Unable to open repository: {}", repo_path))?;
-
-    // let commits = get_commits(&repo, 0).chain_err(|| "Unable to obtain commits")?;
-    // let blob_ids = get_blob_ids(&repo, &commits);
-
-    let cohorts = build_cohorts(&repo, interval, matches.value_of("cohortfmt").unwrap());
+    let mut ax = Ax::new(app_config)
+        .chain_err(|| "Couldn't build Ax structure")?;
+    
+    ax.build_cohorts()
+        .chain_err(|| "Couldn't build cohorts")?;
+    
     Ok(())
 }
 

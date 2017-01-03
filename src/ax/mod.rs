@@ -6,6 +6,7 @@ use chrono::{Duration, NaiveDateTime};
 mod sample;
 use self::sample::Sample;
 
+#[derive(Clone)]
 struct AxOptions {
     interval: i64,
     repo_path: String,
@@ -31,7 +32,7 @@ impl AxOptions {
     }
 }
 
-struct Ax {
+pub struct Ax {
     repo: Repository,
     options: AxOptions,
     samples: Vec<Sample>
@@ -40,7 +41,7 @@ struct Ax {
 impl Ax {
     pub fn new(app_config: App) -> Result<Ax> {
         let options = AxOptions::new(app_config);
-        let repo = Repository::open(options.repo_path)
+        let repo = Repository::open(options.clone().repo_path)
             .chain_err(|| "Couldn't open repository")?;
         Ok(Ax {
             repo: repo, 
@@ -71,55 +72,62 @@ impl Ax {
     fn cohort_name(&self, dt: &NaiveDateTime) -> String {
         dt.format(&self.options.cohort_fmt).to_string()
     }
+
+    fn process_commit(&mut self, id: Oid) -> Result<&Ax> {
+        
+        Ok(self)
+    }
     
-    fn build_cohorts(&mut self) -> Result<&Ax> {
+    pub fn build_cohorts(&mut self) -> Result<&Ax> {
         let mut ids: Vec<Oid> = self.get_revwalk_ids()
             .chain_err(|| "Unable to obtain revwalk ids")?;
-
-        self.samples.clear();
+        
         let duration = Duration::seconds(self.options.interval);
         let mut dt = self.commit_date_time(&self.find_commit(&ids[0])?)? + duration;
-        let mut last_tree: Option<&Tree> = None;
+        let mut current_tree: Option<&Tree> = None;
+        let mut samples = self.samples.clone();
+        samples.clear();
 
         for id in ids {
             let commit = self.find_commit(&id)
-                .chain_err(|| format!("Couldn't find commit: {}", id))?;
+                .chain_err(|| format!("Couldn't find commit: {}", id))? ;
             let commit_dt = self.commit_date_time(&commit)?;
             if commit_dt >= (dt + duration) {
                 dt = commit_dt
             }else {
                 continue
             }
-
-            let sample = if self.samples.is_empty() {
+            
+            let mut sample = if self.samples.is_empty() {
                 Sample::new(&commit_dt)
             }else{
-                self.samples[self.samples.len()-1].clone_and_date(&commit_dt)
+                let idx = samples.len()-1;
+                samples[idx].clone_and_date(&commit_dt)
             };
-
             
-            let current_tree = commit.tree().chain_err(|| "Couldn't retreive tree")?;
+            let last_tree = current_tree;
+            current_tree = Some(&commit.tree().chain_err(|| "Couldn't retreive tree")?);
             
             let mut diff_opts = DiffOptions::new();
             diff_opts.include_unmodified(false)
                 .ignore_filemode(true)
                 .context_lines(0);
-            
-            let diff = self.repo.diff_tree_to_tree(last_tree, Some(&current_tree), Some(&mut diff_opts))
-                .chain_err(|| "Couldn't diff trees!")?;
-            last_tree = Some(&current_tree);
 
+            let diff = self.repo.diff_tree_to_tree(last_tree, current_tree, Some(&mut diff_opts))
+                .chain_err(|| "Couldn't diff trees!")?;
+                        
             let mut file_cb = |_d: DiffDelta, _n: f32| true;
 
             let mut hunk_cb = |d: DiffDelta, hunk: DiffHunk| {
-                sample.add_diff_hunk(d,hunk);
+                let s = &mut sample;
+                s.add_diff_hunk(d,hunk);
                 true
             };
 
             diff.foreach(&mut file_cb, None, Some(&mut hunk_cb), None)
                 .chain_err(|| "Couldn't do diff")?;
 
-            self.samples.push(sample);
+            samples.push(sample);
         }
         
         Ok(self)
