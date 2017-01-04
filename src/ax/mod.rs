@@ -5,6 +5,7 @@ use errors::*;
 use chrono::{Duration, NaiveDateTime};
 use std::fs::File;
 use std::io::Write;
+use regex::Regex;
 
 type Lines = Vec<String>;
 type FileName = String;
@@ -136,6 +137,7 @@ struct Options {
     interval: i64,
     repo_path: String,
     cohort_fmt: String,
+    ignore: Regex
 }
 
 impl Options {
@@ -148,11 +150,13 @@ impl Options {
             .unwrap();
         let repo_path = matches.value_of("REPO").unwrap();
         let cohort_fmt = matches.value_of("cohortfmt").unwrap();
+        let ignore_patterns = matches.value_of("ignore").unwrap();
 
         Options {
             interval: interval,
             repo_path: repo_path.to_owned(),
-            cohort_fmt: cohort_fmt.to_owned()
+            cohort_fmt: cohort_fmt.to_owned(),
+            ignore: Regex::new(ignore_patterns).unwrap()
         }
     }
 }
@@ -287,6 +291,14 @@ impl Ax {
                 let mut file_cb = |_d: DiffDelta, _n: f32| true;
 
                 let mut hunk_cb = |d: DiffDelta, hunk: DiffHunk| {
+                    let filename = match (d.new_file().path(), d.old_file().path()) {
+                        (_, Some(p)) => p.to_str().unwrap(),
+                        (Some(p), _) => p.to_str().unwrap(),
+                        _ => ""
+                    };
+                    if self.options.ignore.is_match(filename) {
+                        return true
+                    }
                     sample.add_diff_hunk(d,hunk, &cohort_name);
                     true
                 };
