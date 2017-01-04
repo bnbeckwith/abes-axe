@@ -161,17 +161,17 @@ impl Options {
     }
 }
 
-pub struct Ax {
+pub struct Axe {
     repo: Repository,
     options: Options,
 }
 
-impl Ax {
-    pub fn new(app_config: App) -> Result<Ax> {
+impl Axe {
+    pub fn new(app_config: App) -> Result<Axe> {
         let options = Options::new(app_config);
         let repo = Repository::open(options.clone().repo_path)
             .chain_err(|| "Couldn't open repository")?;
-        Ok(Ax {
+        Ok(Axe {
             repo: repo, 
             options: options
         })

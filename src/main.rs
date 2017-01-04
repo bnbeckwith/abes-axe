@@ -17,14 +17,14 @@ mod errors {
 }
 use errors::*;
 
-mod ax;
-use ax::Ax;
+mod axe;
+use axe::Axe;
 
 fn run(app_config: App) -> Result<()> {
-    let ax = Ax::new(app_config)
+    let axe = Axe::new(app_config)
         .chain_err(|| "Couldn't build Ax structure")?;
     
-    ax.make_csv()
+    axe.make_csv()
         .chain_err(|| "CSV creation failed")?;
     
     Ok(())
