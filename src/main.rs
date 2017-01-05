@@ -6,6 +6,8 @@ extern crate git2;
 extern crate chrono;
 extern crate clap;
 extern crate regex;
+extern crate pbr;
+
 use clap::{App, Arg};
 
 // We'll put our errors in an `errors` module, and other modules in

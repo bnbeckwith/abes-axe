@@ -1,4 +1,4 @@
-use git2::{SORT_TIME, Commit, Repository, Oid, Delta, DiffDelta, DiffFile, DiffHunk, DiffOptions};
+use git2::{SORT_TIME, Commit, Repository, Oid, Delta, DiffDelta, DiffFile, DiffHunk, DiffOptions, Tree};
 use std::collections::{HashMap, HashSet};
 use clap::App;
 use errors::*;
@@ -6,10 +6,83 @@ use chrono::{Duration, NaiveDateTime};
 use std::fs::File;
 use std::io::Write;
 use regex::Regex;
+use pbr::ProgressBar;
 
 type Lines = Vec<String>;
 type FileName = String;
 type FileMap = HashMap<FileName, Lines>;
+
+enum Change {
+    Add {filename: String, start: u32, length: u32},
+    Delete {filename: String, start: u32, length: u32},
+    DeleteFile {filename: String},
+    AddFile {filename: String, length: u32}
+}
+
+pub struct Changeset {
+    date_time: NaiveDateTime,
+    changes: Vec<Change>  
+}
+
+impl Changeset { 
+    pub fn new(dt: NaiveDateTime) -> Changeset {
+        Changeset{
+            date_time: dt,
+            changes: Vec::new()
+        }
+    }
+
+    pub fn process_added(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
+        let filename = Sample::filename(&d.new_file());
+        self.changes.push(Change::AddFile{filename: filename, length: h.new_lines()});
+        true
+    }
+
+    pub fn process_deleted(&mut self, d: DiffDelta, _h: DiffHunk) -> bool {
+        let filename = Sample::filename(&d.old_file());
+        self.changes.push(Change::DeleteFile{filename: filename});
+        true
+    }
+    
+    pub fn process_modified(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
+        let filename = Sample::filename(&d.new_file());
+        let start = if h.new_start() > 0 {
+            h.new_start() -1
+        } else {0};
+        let old_end = start + h.old_lines();
+        let new_end = start + h.new_lines();
+        if h.old_lines() > 0 {
+            self.changes.push(Change::Delete{filename: filename.clone(),
+                                             start: start,
+                                             length: old_end-start});
+        }
+        if h.new_lines() > 0 {
+            self.changes.push(Change::Add{filename: filename.clone(),
+                                          start: start,
+                                          length: new_end-start});
+        }
+        true
+    }
+
+    pub fn add_diff_hunk(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
+        match d.status() {
+            Delta::Added => {
+                self.process_added(d,h)
+            },
+            Delta::Deleted => {
+                self.process_deleted(d,h)
+            },
+            Delta::Modified => {
+                self.process_modified(d,h)
+            },
+            _ => {
+                println!("Unsupported status!");
+                false
+            }
+            
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Sample {
@@ -18,6 +91,32 @@ pub struct Sample {
 }
 
 impl Sample {
+
+    pub fn from_changesets(changes: Vec<Changeset>, cohort_fmt: &String) -> Vec<Sample> {
+        let mut pb = ProgressBar::new(changes.len() as u64);
+        pb.format("╢▌▌░╟");
+        
+        let samples: Vec<Sample> = changes.iter().fold(Vec::new(), |mut acc, ref set| {
+            let mut sample: Sample = if acc.is_empty() {
+                Sample::new(&set.date_time)
+            } else {
+                acc.last().unwrap()
+                    .clone_and_date(&set.date_time)
+            };
+
+            let cohort = set.date_time.format(cohort_fmt).to_string();
+
+            pb.inc();
+            
+            acc.push(sample.add_changeset(&set, &cohort).to_owned());
+            acc
+        });
+
+        pb.finish();
+
+        samples
+    }
+    
     pub fn new(dt: &NaiveDateTime) -> Sample {
         Sample {
             date_time: *dt,
@@ -31,36 +130,43 @@ impl Sample {
         sample
     }
 
-    pub fn add_diff_hunk(&mut self, delta: DiffDelta, hunk: DiffHunk, cohort: &String) -> &mut Sample {
-
-        match delta.status() {
-            Delta::Added => {
-                self.process_added(delta, hunk, cohort)
-            },
-            Delta::Deleted => {
-                self.process_deleted(delta, hunk)
-            },
-            Delta::Modified => {
-                self.process_modified(delta, hunk, cohort)
-            },
-            Delta::Renamed => {
-                self.process_renamed(delta, hunk)
-            },
-            Delta::Copied => {
-                self.process_copied(delta, hunk)
-            },
-            _ => self 
-        }
+    pub fn add_changeset(&mut self, changeset: &Changeset, cohort: &String) -> &mut Sample {
+        for change in changeset.changes.iter() {
+            match change {
+                &Change::Add { ref filename, start, length } =>
+                {
+                    let mut lines = self.get_lines(&filename);
+                    for _n in start..(start+length){
+                        lines.insert(start as usize, cohort.to_owned())
+                    }
+                    self.set_lines(&filename, lines);
+                },
+                &Change::Delete { ref filename, start, length } =>
+                {
+                    let mut lines = self.get_lines(&filename);
+                    for _n in start..(start+length){
+                        lines.remove(start as usize);
+                    }
+                    self.set_lines(&filename, lines);
+                },
+                &Change::AddFile { ref filename, length } =>
+                {
+                    self.set_lines(&filename,vec![cohort.to_owned(); length as usize]);
+                },
+                &Change::DeleteFile { ref filename } =>
+                {
+                    self.delete_lines(&filename);
+                }
+            }
+        };
+        self
     }
+    
 
     fn filename(f: &DiffFile) -> FileName {
         String::from(f.path().map(|e| e.to_str().unwrap()).unwrap())
     }
 
-    fn total_lines(&self) -> i64 {
-        self.files.values().map(|v| v.len()).fold(0, |acc,l| acc + l as i64)
-    }
-    
     fn get_lines(&self, filename: &FileName) -> Lines {
         match self.files.get(filename) {
             Some(v) => v.to_owned(),
@@ -81,53 +187,6 @@ impl Sample {
 
     fn delete_lines(&mut self, filename: &FileName) -> &mut Sample {
         self.files.remove(filename);
-        self
-    }
-    
-    fn process_added (&mut self, delta: DiffDelta, hunk: DiffHunk, cohort: &String) -> &mut Sample {
-        let filename = Sample::filename(&delta.new_file());
-        let mut lines = self.get_lines(&filename);
-        let start = hunk.new_start() - 1;
-        let end = start + hunk.new_lines(); 
-        for _n in start..end {
-            lines.insert(start as usize, cohort.to_owned());
-        }
-        self.set_lines(&filename,lines)
-    }
-    
-    fn process_deleted (&mut self, delta: DiffDelta, _hunk: DiffHunk) -> &mut Sample {
-        let filename = Sample::filename(&delta.old_file());
-        self.delete_lines(&filename)
-    }
-    
-    fn process_modified (&mut self, delta: DiffDelta, hunk: DiffHunk, cohort: &String) -> &mut Sample {
-        let filename = Sample::filename(&delta.new_file());
-        let mut lines = self.get_lines(&filename);
-        let start = if hunk.new_start() > 0 {
-            hunk.new_start() - 1
-        }else { 0 };
-        let old_end = start + hunk.old_lines();
-        let new_end = start + hunk.new_lines();
-        for _n in start..old_end {
-            lines.remove(start as usize);
-        }
-        for _n in start..new_end {
-            lines.insert(start as usize, cohort.to_owned());
-        }
-        self.set_lines(&filename, lines)
-    }
-    
-    fn process_renamed (&mut self, delta: DiffDelta, _hunk: DiffHunk) -> &mut Sample {
-        println!("Renamed: {} to {}",
-                 Sample::filename(&delta.old_file()),
-                 Sample::filename(&delta.new_file()));
-        self
-    }
-    
-    fn process_copied (&mut self, delta: DiffDelta, _hunk: DiffHunk) -> &mut Sample {
-        println!("Copied: {} to {}",
-                 Sample::filename(&delta.old_file()),
-                 Sample::filename(&delta.new_file()));
         self
     }
 }
@@ -206,7 +265,6 @@ impl Axe {
         let samples = self.collect_samples()
             .chain_err(|| "Couldn't collect samples")?;
 
-        println!("Done collecting {} samples!", samples.len());
         let mut cohorts : Vec<String> = samples
             .iter()
             .map(|s| self.cohort_name(&s.date_time))
@@ -238,58 +296,47 @@ impl Axe {
             .chain_err(|| "Unable to obtain revwalk ids")?;
 
         let duration = Duration::seconds(self.options.interval);
-        let dt = self.commit_date_time(&self.find_commit(&ids[0])?)? + duration;
-
-        struct Accumulator {
-            samples: Vec<Sample>,
-            last_tree_id: Option<Oid>,
-            date_time: NaiveDateTime
-        };
-
-        let start = Accumulator {
-            samples: Vec::new(),
-            last_tree_id: None,
-            date_time: dt
-        };
-
-        let accumulator = ids.iter().fold(start, |acc, &id| {
+        let first_commit = self.find_commit(&ids[0])?;
+        let dt = self.commit_date_time(&first_commit)?;
+        
+        let mut diff_opts = DiffOptions::new();
+        diff_opts.include_unmodified(false)
+            .ignore_filemode(true)
+            .context_lines(0);
+        
+        let commits: Vec<Commit> = ids.iter().fold(vec![first_commit], |mut acc, &id| {
             let commit = self.find_commit(&id).unwrap();
             let commit_dt = self.commit_date_time(&commit).unwrap();
-            let cohort_name = self.cohort_name(&commit_dt); 
+            let last_dt = self.commit_date_time(&acc.last().unwrap()).unwrap();
 
-            if commit_dt < (acc.date_time + duration) {
+            if commit_dt < (last_dt + duration) {
                 return acc
             }
-            
-            let mut sample = acc.samples.last()
-                .map(|ref x| x.clone_and_date(&commit_dt))
-                .unwrap_or(Sample::new(&commit_dt));
 
-            let mut diff_opts = DiffOptions::new();
-            diff_opts.include_unmodified(false)
-                .ignore_filemode(true)
-                .context_lines(0);
-            
-            let diff = match acc.last_tree_id {
-                Some(id) => {
-                    self.repo
-                        .diff_tree_to_tree(Some(self.repo.find_tree(id).as_ref().unwrap()),
-                                           Some(&commit.tree().unwrap()),
-                                           Some(&mut diff_opts))
-                        .unwrap()
-                },
-                None => {
-                    self.repo
-                        .diff_tree_to_tree(None,
-                                           Some(&commit.tree().unwrap()),
-                                           Some(&mut diff_opts))
-                        .unwrap()                    
-                }
-            };
+            acc.push(commit);
+            acc
+        });
 
+        struct TreeData<'a> {
+            tree: Option<Tree<'a>>,
+            date_time: NaiveDateTime
+        }
+
+        let mut trees: Vec<TreeData> = vec![TreeData{ tree: None, date_time: dt}];
+        trees.extend(commits.iter().map(|ref c| 
+            TreeData{
+                tree: Some(c.tree().unwrap()),
+                date_time: self.commit_date_time(&c).unwrap()
+            }
+        ));
+
+        let mut file_cb = |_d: DiffDelta, _n: f32| true;
+        
+        let changesets = trees.windows(2).map(|pair|{
+
+            let mut changeset = Changeset::new(pair[1].date_time);
+            
             {
-                let mut file_cb = |_d: DiffDelta, _n: f32| true;
-
                 let mut hunk_cb = |d: DiffDelta, hunk: DiffHunk| {
                     let filename = match (d.new_file().path(), d.old_file().path()) {
                         (_, Some(p)) => p.to_str().unwrap(),
@@ -299,23 +346,33 @@ impl Axe {
                     if self.options.ignore.is_match(filename) {
                         return true
                     }
-                    sample.add_diff_hunk(d,hunk, &cohort_name);
-                    true
+                    changeset.add_diff_hunk(d,hunk)
                 };
+                
+                let diff = if pair[0].tree.is_none() {
+                    let rh_tree = pair[1].tree.as_ref().unwrap();
+                    
+                    self.repo.diff_tree_to_tree(None,
+                                                Some(&rh_tree),
+                                                Some(&mut diff_opts))
+                }else {
+                    let lh_tree = pair[0].tree.as_ref().unwrap();
+                    let rh_tree = pair[1].tree.as_ref().unwrap();
+                    
+                    self.repo.diff_tree_to_tree(Some(&lh_tree),
+                                                Some(&rh_tree),
+                                                Some(&mut diff_opts))
+                };
+                
+                diff.unwrap().foreach(&mut file_cb, None, Some(&mut hunk_cb), None)
+                    .unwrap();
+            }
+            
+            changeset
+        }).collect::<Vec<Changeset>>();
 
-                diff.foreach(&mut file_cb, None, Some(&mut hunk_cb), None).unwrap();
-            }
-            
-            let mut samples = acc.samples.clone();
-            samples.push(sample);
-            
-            Accumulator {
-                samples: samples,
-                last_tree_id: Some(commit.tree().unwrap().id()),
-                date_time: commit_dt
-            }
-        });
+        let samples = Sample::from_changesets(changesets, &self.options.cohort_fmt);
         
-        Ok(accumulator.samples)
+        Ok(samples)
     }
 }
