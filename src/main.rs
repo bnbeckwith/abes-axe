@@ -33,7 +33,7 @@ fn run(app_config: App) -> Result<()> {
 }
 
 fn main() {
-    let app_config = App::new("git-of-thesus")
+    let app_config = App::new("abes-ax")
         .version("0.1")
         .author("Benjamin Beckwith")
         .arg(Arg::with_name("cohortfmt")
