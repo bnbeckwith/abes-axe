@@ -196,7 +196,7 @@ struct Options {
     interval: i64,
     repo_path: String,
     cohort_fmt: String,
-    ignore: Regex
+    ignore: Option<Regex>
 }
 
 impl Options {
@@ -209,13 +209,13 @@ impl Options {
             .unwrap();
         let repo_path = matches.value_of("REPO").unwrap();
         let cohort_fmt = matches.value_of("cohortfmt").unwrap();
-        let ignore_patterns = matches.value_of("ignore").unwrap();
+        let ignore_patterns = matches.value_of("ignore").map(|i| Regex::new(i).unwrap());
 
         Options {
             interval: interval,
             repo_path: repo_path.to_owned(),
             cohort_fmt: cohort_fmt.to_owned(),
-            ignore: Regex::new(ignore_patterns).unwrap()
+            ignore: ignore_patterns
         }
     }
 }
@@ -290,6 +290,13 @@ impl Axe {
         
         Ok(())
     }
+
+    fn skip_file(&self, filename: &str) -> bool {
+        match self.options.ignore {
+            None => false,
+            Some(ref re) => re.is_match(filename)
+        }
+    }
     
     pub fn collect_samples(&self) -> Result<Vec<Sample>> {
         let ids: Vec<Oid> = self.get_revwalk_ids()
@@ -343,7 +350,7 @@ impl Axe {
                         (Some(p), _) => p.to_str().unwrap(),
                         _ => ""
                     };
-                    if self.options.ignore.is_match(filename) {
+                    if self.skip_file(filename) {
                         return true
                     }
                     changeset.add_diff_hunk(d,hunk)
