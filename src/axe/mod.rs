@@ -94,6 +94,7 @@ impl Sample {
 
     pub fn from_changesets(changes: Vec<Changeset>, cohort_fmt: &String) -> Vec<Sample> {
         let mut pb = ProgressBar::new(changes.len() as u64);
+        pb.message("Creating cohorts: ");
         pb.format("╢▌▌░╟");
         
         let samples: Vec<Sample> = changes.iter().fold(Vec::new(), |mut acc, ref set| {
@@ -310,7 +311,7 @@ impl Axe {
         diff_opts.include_unmodified(false)
             .ignore_filemode(true)
             .context_lines(0);
-        
+
         let commits: Vec<Commit> = ids.iter().fold(vec![first_commit], |mut acc, &id| {
             let commit = self.find_commit(&id).unwrap();
             let commit_dt = self.commit_date_time(&commit).unwrap();
@@ -338,7 +339,11 @@ impl Axe {
         ));
 
         let mut file_cb = |_d: DiffDelta, _n: f32| true;
-        
+
+        let mut pb = ProgressBar::new(trees.len() as u64);
+        pb.message("Collecting changesets: ");
+        pb.format("╢▌▌░╟");
+
         let changesets = trees.windows(2).map(|pair|{
 
             let mut changeset = Changeset::new(pair[1].date_time);
@@ -374,9 +379,11 @@ impl Axe {
                 diff.unwrap().foreach(&mut file_cb, None, Some(&mut hunk_cb), None)
                     .unwrap();
             }
-            
+            pb.inc();
             changeset
         }).collect::<Vec<Changeset>>();
+
+        pb.finish();
 
         let samples = Sample::from_changesets(changesets, &self.options.cohort_fmt);
         
