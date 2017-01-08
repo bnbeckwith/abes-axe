@@ -6,9 +6,11 @@ use chrono::{Duration, NaiveDateTime};
 use std::fs::File;
 use std::io::Write;
 use regex::Regex;
-use pbr::ProgressBar;
+use pbr::MultiBar;
+use std::thread;
 
-type Lines = Vec<String>;
+type Cohort = String;
+type Lines = Vec<Cohort>;
 type FileName = String;
 type FileMap = HashMap<FileName, Lines>;
 
@@ -86,30 +88,23 @@ pub struct Sample {
 
 impl Sample {
 
-    pub fn from_changesets(changes: Vec<Changeset>, cohort_fmt: &String) -> Vec<Sample> {
-        let mut pb = ProgressBar::new(changes.len() as u64);
-        pb.message("Creating cohorts: ");
-        pb.format("╢▌▌░╟");
-        
-        let samples: Vec<Sample> = changes.iter().fold(Vec::new(), |mut acc, ref set| {
+    pub fn from_changesets(changes: Vec<Changeset>, cohort_fmt: &String, iter_cb: &mut FnMut() -> bool) -> Vec<Sample> {
+        let init: Vec<Sample> = Vec::new();
+        changes.iter().fold(init, |mut acc, ref set| {
             let mut sample: Sample = if acc.is_empty() {
                 Sample::new(&set.date_time)
             } else {
                 acc.last().unwrap()
                     .clone_and_date(&set.date_time)
             };
-
+            
             let cohort = set.date_time.format(cohort_fmt).to_string();
 
-            pb.inc();
+            iter_cb();
             
             acc.push(sample.add_changeset(&set, &cohort).to_owned());
             acc
-        });
-
-        pb.finish();
-
-        samples
+        })
     }
     
     pub fn new(dt: &NaiveDateTime) -> Sample {
@@ -335,12 +330,20 @@ impl Axe {
 
         let mut file_cb = |_d: DiffDelta, _n: f32| true;
 
-        let mut pb = ProgressBar::new(trees.len() as u64);
+        
+        let mut mb = MultiBar::new();
+        let mut pb = mb.create_bar(trees.len() as u64);
+        let mut pb2 = mb.create_bar(trees.len() as u64);
+
+        thread::spawn(move || mb.listen());
+
         pb.message("Collecting changesets: ");
         pb.format("╢▌▌░╟");
-
+        pb2.message("Processing changesets: ");
+        pb2.format("╢▌▌░╟");
+        
         let changesets = trees.windows(2).map(|pair|{
-
+                    
             let mut changeset = Changeset::new(pair[1].date_time);
             
             {
@@ -382,7 +385,15 @@ impl Axe {
 
         pb.finish();
 
-        let samples = Sample::from_changesets(changesets, &self.options.cohort_fmt);
+        let samples = {
+            let mut inc_pb = || {
+                pb2.inc();
+                true
+            };
+            Sample::from_changesets(changesets, &self.options.cohort_fmt, &mut inc_pb)
+        };
+       
+        pb2.finish();
         
         Ok(samples)
     }

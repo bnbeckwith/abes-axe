@@ -4,9 +4,10 @@ version = "0.1.0"
 authors = ["Ben Beckwith <bnbeckwith@gmail.com>"]
 
 [dependencies]
+# sort these
 error-chain = "0.7.1"
 clap = "2.*"
 git2 = "0.6"
 chrono = "0.2.*"
 regex = "*"
-pbr = "*"
+pbr = { git = "https://github.com/a8m/pb" }
