@@ -66,15 +66,9 @@ impl Changeset {
 
     pub fn add_diff_hunk(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
         match d.status() {
-            Delta::Added => {
-                self.process_added(d,h)
-            },
-            Delta::Deleted => {
-                self.process_deleted(d,h)
-            },
-            Delta::Modified => {
-                self.process_modified(d,h)
-            },
+            Delta::Added =>    self.process_added(d,h),
+            Delta::Deleted =>  self.process_deleted(d,h),
+            Delta::Modified => self.process_modified(d,h),
             _ => {
                 println!("Unsupported status!");
                 false
@@ -136,6 +130,7 @@ impl Sample {
             match change {
                 &Change::Add { ref filename, start, length } =>
                 {
+                   // TODO: split, create, rejoin 
                     let mut lines = self.get_lines(&filename);
                     for _n in start..(start+length){
                         lines.insert(start as usize, cohort.to_owned())
@@ -144,6 +139,7 @@ impl Sample {
                 },
                 &Change::Delete { ref filename, start, length } =>
                 {
+                    // TODO: can I use DRAIN
                     let mut lines = self.get_lines(&filename);
                     for _n in start..(start+length){
                         lines.remove(start as usize);
@@ -163,7 +159,6 @@ impl Sample {
         self
     }
     
-
     fn filename(f: &DiffFile) -> FileName {
         String::from(f.path().map(|e| e.to_str().unwrap()).unwrap())
     }
@@ -300,7 +295,7 @@ impl Axe {
     }
     
     pub fn collect_samples(&self) -> Result<Vec<Sample>> {
-        let ids: Vec<Oid> = self.get_revwalk_ids()
+        let ids = self.get_revwalk_ids()
             .chain_err(|| "Unable to obtain revwalk ids")?;
 
         let duration = Duration::seconds(self.options.interval);
@@ -331,7 +326,7 @@ impl Axe {
         }
 
         let mut trees: Vec<TreeData> = vec![TreeData{ tree: None, date_time: dt}];
-        trees.extend(commits.iter().map(|ref c| 
+        trees.extend(commits.iter().map(|ref c|
             TreeData{
                 tree: Some(c.tree().unwrap()),
                 date_time: self.commit_date_time(&c).unwrap()
@@ -353,7 +348,7 @@ impl Axe {
                     let filename = match (d.new_file().path(), d.old_file().path()) {
                         (_, Some(p)) => p.to_str().unwrap(),
                         (Some(p), _) => p.to_str().unwrap(),
-                        _ => ""
+                        _ => "" // TODO Consider error here
                     };
                     if self.skip_file(filename) {
                         return true
@@ -361,6 +356,8 @@ impl Axe {
                     changeset.add_diff_hunk(d,hunk)
                 };
                 
+                // TODO Helper function taking my references.... see Alex.
+                //   conversion traits
                 let diff = if pair[0].tree.is_none() {
                     let rh_tree = pair[1].tree.as_ref().unwrap();
                     
