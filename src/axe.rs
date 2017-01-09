@@ -13,7 +13,9 @@ type Cohort = String;
 type Lines = Vec<Cohort>;
 type FileName = String;
 type FileMap = HashMap<FileName, Lines>;
-
+type CohortMap = HashMap<Cohort, u64>;
+type FileCohorts = HashMap<FileName, CohortMap>;
+    
 enum Change {
     Add {filename: String, start: u32, length: u32},
     Delete {filename: String, start: u32, length: u32},
@@ -35,19 +37,19 @@ impl Changeset {
     }
 
     pub fn process_added(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
-        let filename = Sample::filename(&d.new_file());
+        let filename = Accumulator::filename(&d.new_file());
         self.changes.push(Change::AddFile{filename: filename, length: h.new_lines()});
         true
     }
 
     pub fn process_deleted(&mut self, d: DiffDelta, _h: DiffHunk) -> bool {
-        let filename = Sample::filename(&d.old_file());
+        let filename = Accumulator::filename(&d.old_file());
         self.changes.push(Change::DeleteFile{filename: filename});
         true
     }
     
     pub fn process_modified(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
-        let filename = Sample::filename(&d.new_file());
+        let filename = Accumulator::filename(&d.new_file());
         let start = if h.new_start() > 0 {
             h.new_start() -1
         } else {0};
@@ -81,51 +83,21 @@ impl Changeset {
 }
 
 #[derive(Clone)]
-pub struct Sample {
-    pub date_time: NaiveDateTime,
+struct Accumulator {
     files: FileMap
 }
 
-impl Sample {
-
-    pub fn from_changesets(changes: Vec<Changeset>, cohort_fmt: &String, iter_cb: &mut FnMut() -> bool) -> Vec<Sample> {
-        let init: Vec<Sample> = Vec::new();
-        changes.iter().fold(init, |mut acc, ref set| {
-            let mut sample: Sample = if acc.is_empty() {
-                Sample::new(&set.date_time)
-            } else {
-                acc.last().unwrap()
-                    .clone_and_date(&set.date_time)
-            };
-            
-            let cohort = set.date_time.format(cohort_fmt).to_string();
-
-            iter_cb();
-            
-            acc.push(sample.add_changeset(&set, &cohort).to_owned());
-            acc
-        })
-    }
-    
-    pub fn new(dt: &NaiveDateTime) -> Sample {
-        Sample {
-            date_time: *dt,
-            files: HashMap::new()
-        }
+impl Accumulator {
+    pub fn new() -> Accumulator {
+        Accumulator { files: HashMap::new() }
     }
 
-    pub fn clone_and_date(&self, dt: &NaiveDateTime) -> Sample {
-        let mut sample = self.clone();
-        sample.date_time = *dt;
-        sample
-    }
-
-    pub fn add_changeset(&mut self, changeset: &Changeset, cohort: &String) -> &mut Sample {
+    pub fn add_changeset(&mut self, changeset: &Changeset, cohort: &String) -> &mut Accumulator {
         for change in changeset.changes.iter() {
             match change {
                 &Change::Add { ref filename, start, length } =>
                 {
-                   // TODO: split, create, rejoin 
+                    // TODO: split, create, rejoin 
                     let mut lines = self.get_lines(&filename);
                     for _n in start..(start+length){
                         lines.insert(start as usize, cohort.to_owned())
@@ -153,7 +125,6 @@ impl Sample {
         };
         self
     }
-    
     fn filename(f: &DiffFile) -> FileName {
         String::from(f.path().map(|e| e.to_str().unwrap()).unwrap())
     }
@@ -165,20 +136,65 @@ impl Sample {
         }
     }
 
-    fn count_cohort_lines(&self, cohort: &String) -> i64 {
-        self.files.values()
-            .map(|v| v.iter().filter(|v| *v == cohort).count() )
-            .fold(0, |acc, v| acc + v) as i64
-    }
-    
-    fn set_lines(&mut self, filename: &FileName, lines: Lines) -> &mut Sample {
+    fn set_lines(&mut self, filename: &FileName, lines: Lines) -> &mut Accumulator {
         self.files.insert(filename.to_owned(), lines);
         self
     }
 
-    fn delete_lines(&mut self, filename: &FileName) -> &mut Sample {
+    fn delete_lines(&mut self, filename: &FileName) -> &mut Accumulator {
         self.files.remove(filename);
         self
+    }    
+}
+
+#[derive(Clone)]
+pub struct Sample {
+    pub date_time: NaiveDateTime,
+    files: FileCohorts
+}
+
+impl Sample {
+
+    pub fn from_changesets(changes: Vec<Changeset>, cohort_fmt: &String, iter_cb: &mut FnMut() -> bool) -> Vec<Sample> {
+        let mut result: Vec<Sample> = Vec::new();
+        changes.iter().fold(Accumulator::new(), |mut acc, ref set| {
+            
+            let cohort = set.date_time.format(cohort_fmt).to_string();
+
+            iter_cb();
+ 
+            result.push(
+                Sample::from_acc(set.date_time, acc.add_changeset(&set, &cohort)));
+            acc
+        });
+        result
+    }
+
+    fn from_acc(dt: NaiveDateTime, accumulator: &Accumulator) -> Sample {
+        let mut fcs: FileCohorts = HashMap::new();
+        // Key, value, summarize the lines on the values. Map over into a Hash of counts.
+        for key in accumulator.files.keys() {
+            let fh: HashMap<String, u64> =
+                accumulator.files.get(key).unwrap()
+                .iter()
+                .fold(HashMap::new(), |mut acc, value| {
+                    {
+                        let count = acc.entry(value.to_owned()).or_insert(0);
+                        *count += 1;
+                    }
+                    acc
+                });
+            
+            fcs.insert(key.to_owned(), fh);
+        }
+        
+        Sample{ date_time: dt, files: fcs}
+    }
+ 
+    pub fn count_cohort_lines(&self, cohort: &String) -> u64 {
+        self.files.values()
+            .map(|v: &CohortMap| v.get(cohort).unwrap().to_owned() )
+            .sum()
     }
 }
 
