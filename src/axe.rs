@@ -126,28 +126,29 @@ impl Sample {
                 &Change::Add { ref filename, start, length } =>
                 {
                    // TODO: split, create, rejoin 
-                    let mut lines = self.get_lines(&filename);
+                    let mut lines = self.files.entry(filename.to_owned())
+                        .or_insert(Vec::new());
                     for _n in start..(start+length){
                         lines.insert(start as usize, cohort.to_owned())
                     }
-                    self.set_lines(&filename, lines);
                 },
                 &Change::Delete { ref filename, start, length } =>
                 {
                     // TODO: can I use DRAIN
-                    let mut lines = self.get_lines(&filename);
+                    let mut lines = self.files.entry(filename.to_owned())
+                        .or_insert(Vec::new());
                     for _n in start..(start+length){
                         lines.remove(start as usize);
                     }
-                    self.set_lines(&filename, lines);
                 },
                 &Change::AddFile { ref filename, length } =>
                 {
-                    self.set_lines(&filename,vec![cohort.to_owned(); length as usize]);
+                    self.files.insert(filename.to_owned(),
+                                      vec![cohort.to_owned(); length as usize]);
                 },
                 &Change::DeleteFile { ref filename } =>
                 {
-                    self.delete_lines(&filename);
+                    self.files.remove(filename);
                 }
             }
         };
@@ -158,28 +159,12 @@ impl Sample {
         String::from(f.path().map(|e| e.to_str().unwrap()).unwrap())
     }
 
-    fn get_lines(&self, filename: &FileName) -> Lines {
-        match self.files.get(filename) {
-            Some(v) => v.to_owned(),
-            None    => Vec::new()
-        }
-    }
-
     fn count_cohort_lines(&self, cohort: &String) -> i64 {
         self.files.values()
             .map(|v| v.iter().filter(|v| *v == cohort).count() )
             .fold(0, |acc, v| acc + v) as i64
     }
     
-    fn set_lines(&mut self, filename: &FileName, lines: Lines) -> &mut Sample {
-        self.files.insert(filename.to_owned(), lines);
-        self
-    }
-
-    fn delete_lines(&mut self, filename: &FileName) -> &mut Sample {
-        self.files.remove(filename);
-        self
-    }
 }
 
 #[derive(Clone)]
