@@ -8,6 +8,7 @@ use std::io::Write;
 use regex::Regex;
 use pbr::MultiBar;
 use std::thread;
+use itertools::Itertools;
 
 type Cohort = String;
 type Lines = Vec<Cohort>;
@@ -172,7 +173,8 @@ struct Options {
     interval: i64,
     repo_path: String,
     cohort_fmt: String,
-    ignore: Option<Regex>
+    ignore: Option<Regex>,
+    only: Option<Regex>
 }
 
 impl Options {
@@ -185,13 +187,25 @@ impl Options {
             .unwrap();
         let repo_path = matches.value_of("REPO").unwrap();
         let cohort_fmt = matches.value_of("cohortfmt").unwrap();
-        let ignore_patterns = matches.value_of("ignore").map(|i| Regex::new(i).unwrap());
-
+        let ignore_patterns = matches.values_of("ignore").map(|iter| {
+            let re: String = iter.map(|s| String::from(s))
+                .intersperse(String::from("|"))
+                .collect();
+            Regex::new(re.as_str()).unwrap()
+        });
+        let only_patterns = matches.values_of("only").map(|iter| {
+            let re: String = iter.map(|s| String::from(s))
+                .intersperse(String::from("|"))
+                .collect();
+            Regex::new(re.as_str()).unwrap()
+        });
+        
         Options {
             interval: interval,
             repo_path: repo_path.to_owned(),
             cohort_fmt: cohort_fmt.to_owned(),
-            ignore: ignore_patterns
+            ignore: ignore_patterns,
+            only: only_patterns
         }
     }
 }
@@ -268,10 +282,15 @@ impl Axe {
     }
 
     fn skip_file(&self, filename: &str) -> bool {
-        match self.options.ignore {
+        let ignore = match self.options.ignore {
             None => false,
             Some(ref re) => re.is_match(filename)
-        }
+        };
+        let keep = match self.options.only {
+            None => true,
+            Some(ref re) => re.is_match(filename)
+        };
+        ignore || !keep
     }
     
     pub fn collect_samples(&self) -> Result<Vec<Sample>> {
