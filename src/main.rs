@@ -1,13 +1,17 @@
+#![feature(alloc_system)]
 // Setup error-chain
 // `error_chain!` can recurse deeply
 #![recursion_limit = "1024"]
-#[macro_use] extern crate error_chain;
-extern crate git2;
+extern crate alloc_system;
 extern crate chrono;
 extern crate clap;
-extern crate regex;
+#[macro_use] 
+extern crate error_chain;
+extern crate git2;
+#[macro_use]
+extern crate itertools;
 extern crate pbr;
-
+extern crate regex;
 use clap::{App, Arg};
 
 // We'll put our errors in an `errors` module, and other modules in
