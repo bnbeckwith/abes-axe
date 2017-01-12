@@ -89,6 +89,7 @@ pub struct Sample {
 
 impl Sample {
 
+    #[inline]
     pub fn from_changesets(changes: Vec<Changeset>, cohort_fmt: &String, iter_cb: &mut FnMut() -> bool) -> Vec<Sample> {
         let init: Vec<Sample> = Vec::new();
         changes.iter().fold(init, |mut acc, ref set| {
@@ -126,21 +127,19 @@ impl Sample {
             match change {
                 &Change::Add { ref filename, start, length } =>
                 {
-                   // TODO: split, create, rejoin 
                     let mut lines = self.files.entry(filename.to_owned())
                         .or_insert(Vec::new());
-                    for _n in start..(start+length){
-                        lines.insert(start as usize, cohort.to_owned())
-                    }
+                    let end = lines.split_off(start as usize);
+                    lines.extend_from_slice(&vec![cohort.to_owned(); length as usize]);
+                    lines.extend_from_slice(end.as_slice());
                 },
                 &Change::Delete { ref filename, start, length } =>
                 {
-                    // TODO: can I use DRAIN
                     let mut lines = self.files.entry(filename.to_owned())
                         .or_insert(Vec::new());
-                    for _n in start..(start+length){
-                        lines.remove(start as usize);
-                    }
+                    let start = start as usize;
+                    let end = start + length as usize;
+                    lines.drain(start..end);
                 },
                 &Change::AddFile { ref filename, length } =>
                 {
