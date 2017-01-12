@@ -70,7 +70,6 @@ fn main() {
             .long("outdir")
             .short("o")
             .takes_value(true)
-            .required(true)
             .default_value(".")
             .help("Output directory to store results"))
         .arg(Arg::with_name("branch")
