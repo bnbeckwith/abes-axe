@@ -1,8 +1,6 @@
-#![feature(alloc_system)]
 // Setup error-chain
 // `error_chain!` can recurse deeply
 #![recursion_limit = "1024"]
-extern crate alloc_system;
 extern crate chrono;
 extern crate clap;
 #[macro_use] 

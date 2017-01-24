@@ -9,9 +9,10 @@ use regex::Regex;
 use pbr::MultiBar;
 use std::thread;
 use itertools::Itertools;
+use std::rc::Rc;
 
 type Cohort = String;
-type Lines = Vec<Cohort>;
+type Lines = Rc<Vec<Cohort>>;
 type FileName = String;
 type FileMap = HashMap<FileName, Lines>;
 
@@ -127,24 +128,25 @@ impl Sample {
             match change {
                 &Change::Add { ref filename, start, length } =>
                 {
-                    let mut lines = self.files.entry(filename.to_owned())
-                        .or_insert(Vec::new());
-                    let end = lines.split_off(start as usize);
-                    lines.extend_from_slice(&vec![cohort.to_owned(); length as usize]);
-                    lines.extend_from_slice(end.as_slice());
+                    let mut lines_rc = self.files.entry(filename.to_owned())
+                        .or_insert(Rc::new(Vec::new()));
+                    let end = Rc::make_mut(&mut lines_rc).split_off(start as usize);
+                    Rc::make_mut(&mut lines_rc)
+                        .extend_from_slice(&vec![cohort.to_owned(); length as usize]);
+                    Rc::make_mut(&mut lines_rc).extend_from_slice(end.as_slice());
                 },
                 &Change::Delete { ref filename, start, length } =>
                 {
                     let mut lines = self.files.entry(filename.to_owned())
-                        .or_insert(Vec::new());
+                        .or_insert(Rc::new(Vec::new()));
                     let start = start as usize;
                     let end = start + length as usize;
-                    lines.drain(start..end);
+                    Rc::make_mut(lines).drain(start..end);
                 },
                 &Change::AddFile { ref filename, length } =>
                 {
                     self.files.insert(filename.to_owned(),
-                                      vec![cohort.to_owned(); length as usize]);
+                                      Rc::new(vec![cohort.to_owned(); length as usize]));
                 },
                 &Change::DeleteFile { ref filename } =>
                 {
