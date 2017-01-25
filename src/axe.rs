@@ -9,10 +9,12 @@ use regex::Regex;
 use pbr::MultiBar;
 use std::thread;
 use itertools::Itertools;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::mpsc::{Sender, Receiver};
+use std::sync::mpsc;
 
 type Cohort = String;
-type Lines = Rc<Vec<Cohort>>;
+type Lines = Arc<Vec<Cohort>>;
 type FileName = String;
 type FileMap = HashMap<FileName, Lines>;
 
@@ -90,26 +92,6 @@ pub struct Sample {
 
 impl Sample {
 
-    #[inline]
-    pub fn from_changesets(changes: Vec<Changeset>, cohort_fmt: &String, iter_cb: &mut FnMut() -> bool) -> Vec<Sample> {
-        let init: Vec<Sample> = Vec::new();
-        changes.iter().fold(init, |mut acc, ref set| {
-            let mut sample: Sample = if acc.is_empty() {
-                Sample::new(&set.date_time)
-            } else {
-                acc.last().unwrap()
-                    .clone_and_date(&set.date_time)
-            };
-            
-            let cohort = set.date_time.format(cohort_fmt).to_string();
-
-            iter_cb();
-            
-            acc.push(sample.add_changeset(&set, &cohort).to_owned());
-            acc
-        })
-    }
-    
     pub fn new(dt: &NaiveDateTime) -> Sample {
         Sample {
             date_time: *dt,
@@ -129,24 +111,24 @@ impl Sample {
                 &Change::Add { ref filename, start, length } =>
                 {
                     let mut lines_rc = self.files.entry(filename.to_owned())
-                        .or_insert(Rc::new(Vec::new()));
-                    let end = Rc::make_mut(&mut lines_rc).split_off(start as usize);
-                    Rc::make_mut(&mut lines_rc)
+                        .or_insert(Arc::new(Vec::new()));
+                    let end = Arc::make_mut(&mut lines_rc).split_off(start as usize);
+                    Arc::make_mut(&mut lines_rc)
                         .extend_from_slice(&vec![cohort.to_owned(); length as usize]);
-                    Rc::make_mut(&mut lines_rc).extend_from_slice(end.as_slice());
+                    Arc::make_mut(&mut lines_rc).extend_from_slice(end.as_slice());
                 },
                 &Change::Delete { ref filename, start, length } =>
                 {
                     let mut lines = self.files.entry(filename.to_owned())
-                        .or_insert(Rc::new(Vec::new()));
+                        .or_insert(Arc::new(Vec::new()));
                     let start = start as usize;
                     let end = start + length as usize;
-                    Rc::make_mut(lines).drain(start..end);
+                    Arc::make_mut(lines).drain(start..end);
                 },
                 &Change::AddFile { ref filename, length } =>
                 {
                     self.files.insert(filename.to_owned(),
-                                      Rc::new(vec![cohort.to_owned(); length as usize]));
+                                      Arc::new(vec![cohort.to_owned(); length as usize]));
                 },
                 &Change::DeleteFile { ref filename } =>
                 {
@@ -346,9 +328,37 @@ impl Axe {
         pb.format("╢▌▌░╟");
         pb2.message("Processing changesets: ");
         pb2.format("╢▌▌░╟");
+
+        let (tx, rx) : (Sender<Changeset>, Receiver<Changeset>) = mpsc::channel();
+        let (samples_tx, samples_rx) : (Sender<Vec<Sample>>, Receiver<Vec<Sample>>)
+            = mpsc::channel();
+
+
+        let cohort_fmt = self.options.cohort_fmt.clone();
         
-        let changesets = trees.windows(2).map(|pair|{
-                    
+        thread::spawn(move || {
+            let mut acc: Vec<Sample> = Vec::new();
+            for changeset in rx.iter() {
+                let mut sample: Sample = if acc.is_empty() {
+                    Sample::new(&changeset.date_time)
+                } else {
+                    acc.last().unwrap()
+                        .clone_and_date(&changeset.date_time)
+                };
+
+                let cohort = changeset.date_time.format(&cohort_fmt).to_string();
+
+                pb2.inc();
+
+                acc.push(sample.add_changeset(&changeset, &cohort).to_owned())
+            }
+
+            pb2.finish();
+            samples_tx.send(acc).unwrap();
+        });
+        
+        for pair in trees.windows(2) {
+            
             let mut changeset = Changeset::new(pair[1].date_time);
             
             {
@@ -385,20 +395,13 @@ impl Axe {
                     .unwrap();
             }
             pb.inc();
-            changeset
-        }).collect::<Vec<Changeset>>();
+            tx.send(changeset).unwrap();
+        };
+        drop(tx);
 
         pb.finish();
 
-        let samples = {
-            let mut inc_pb = || {
-                pb2.inc();
-                true
-            };
-            Sample::from_changesets(changesets, &self.options.cohort_fmt, &mut inc_pb)
-        };
-       
-        pb2.finish();
+        let samples = samples_rx.recv().unwrap();
         
         Ok(samples)
     }
