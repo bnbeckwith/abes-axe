@@ -10,6 +10,7 @@ extern crate git2;
 extern crate itertools;
 extern crate pbr;
 extern crate regex;
+extern crate rayon;
 use clap::{App, Arg};
 
 // We'll put our errors in an `errors` module, and other modules in

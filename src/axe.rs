@@ -1,4 +1,4 @@
-use git2::{SORT_TIME, Commit, Repository, Oid, Delta, DiffDelta, DiffFile, DiffHunk, DiffOptions, Tree};
+use git2::{SORT_TIME, Commit, Repository, Oid, Delta, DiffDelta, DiffFile, DiffHunk, DiffOptions};
 use std::collections::{HashMap, HashSet};
 use clap::App;
 use errors::*;
@@ -9,9 +9,11 @@ use regex::Regex;
 use pbr::MultiBar;
 use std::thread;
 use itertools::Itertools;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
+use rayon::prelude::*;
+use rayon::Configuration;
 
 type Cohort = String;
 type Lines = Arc<Vec<Cohort>>;
@@ -106,10 +108,13 @@ impl Sample {
     }
 
     pub fn add_changeset(&mut self, changeset: &Changeset, cohort: &String) -> &mut Sample {
+        print!("Processing files: ");
+        let mut changesets_by_filename: HashMap<FileName, Changeset> = HashMap::new();
         for change in changeset.changes.iter() {
             match change {
                 &Change::Add { ref filename, start, length } =>
                 {
+                    print!("{},", filename);
                     let mut lines_rc = self.files.entry(filename.to_owned())
                         .or_insert(Arc::new(Vec::new()));
                     let end = Arc::make_mut(&mut lines_rc).split_off(start as usize);
@@ -119,6 +124,7 @@ impl Sample {
                 },
                 &Change::Delete { ref filename, start, length } =>
                 {
+                    print!("{},", filename);
                     let mut lines = self.files.entry(filename.to_owned())
                         .or_insert(Arc::new(Vec::new()));
                     let start = start as usize;
@@ -127,15 +133,18 @@ impl Sample {
                 },
                 &Change::AddFile { ref filename, length } =>
                 {
+                    print!("{},", filename);
                     self.files.insert(filename.to_owned(),
                                       Arc::new(vec![cohort.to_owned(); length as usize]));
                 },
                 &Change::DeleteFile { ref filename } =>
                 {
+                    print!("{},", filename);
                     self.files.remove(filename);
                 }
             }
         };
+        println!("...done");
         self
     }
     
@@ -158,6 +167,12 @@ struct Options {
     cohort_fmt: String,
     ignore: Option<Regex>,
     only: Option<Regex>
+}
+
+struct TreePair {
+    left: Option<Oid>,
+    right: Option<Oid>,
+    date_time: NaiveDateTime
 }
 
 impl Options {
@@ -194,23 +209,21 @@ impl Options {
 }
 
 pub struct Axe {
-    repo: Repository,
     options: Options,
 }
 
 impl Axe {
     pub fn new(app_config: App) -> Result<Axe> {
         let options = Options::new(app_config);
-        let repo = Repository::open(options.clone().repo_path)
-            .chain_err(|| "Couldn't open repository")?;
         Ok(Axe {
-            repo: repo, 
             options: options
         })
     }
 
     fn get_revwalk_ids(&self) -> Result<Vec<Oid>> {
-        let mut revwalk = self.repo.revwalk()
+        let repo = Repository::open(&self.options.repo_path)
+            .chain_err(|| "Unable to open repo")?;
+        let mut revwalk = repo.revwalk()
             .chain_err(|| "Unable to revwalk")?;
         revwalk.set_sorting(SORT_TIME);
         revwalk.push_head()
@@ -223,11 +236,6 @@ impl Axe {
 
     fn commit_date_time(&self, commit: &Commit) -> Result<NaiveDateTime> {
         Ok(NaiveDateTime::from_num_seconds_from_unix_epoch(commit.time().seconds(), 0))
-    }
-
-    fn find_commit(&self, oid: &Oid) -> Result<Commit> {
-        self.repo.find_commit(*oid)
-            .chain_err(|| format!("Couldn't find commit for id: {}", oid))
     }
 
     pub fn cohort_name(&self, dt: &NaiveDateTime) -> String {
@@ -275,14 +283,88 @@ impl Axe {
         };
         ignore || !keep
     }
+
+    fn build_changesets(&self, treepairs: &[TreePair], tx: Sender<Changeset>) -> () {
+        let repo_path = &self.options.repo_path;
+
+        let changesets: HashMap<NaiveDateTime, Changeset> = HashMap::new();
+        let changesets = Arc::new(Mutex::new(changesets));
+        let datetimes = treepairs.iter().map(|tp| tp.date_time).collect::<Vec<NaiveDateTime>>();
+
+        let threadsets = changesets.clone();
+        thread::spawn(move || {
+            for dt in datetimes.clone() {
+                let mut unfound = true;
+                while unfound {
+                    let mut changesets = threadsets.lock().unwrap();
+                    match changesets.remove(&dt) {
+                        Some(set) => {
+                            tx.send(set).unwrap();
+                            unfound = false;
+                        },
+                        None => ()
+                    };
+                };
+            };
+            ()
+        });
+
+        let rayon_cfg = Configuration::new();
+        rayon_cfg.set_num_threads(4);
+        
+        let nothing = treepairs.par_iter().map(|tp| {
+            let repo = Repository::open(repo_path).unwrap();
+            let mut changeset = Changeset::new(tp.date_time);
+
+            let mut file_cb = |_d: DiffDelta, _n: f32| true;
+
+            {
+                let mut hunk_cb = |d: DiffDelta, hunk: DiffHunk| {
+                    let filename = match (d.new_file().path(), d.old_file().path()) {
+                        (_, Some(p)) => p.to_str().unwrap(),
+                        (Some(p), _) => p.to_str().unwrap(),
+                        _ => "" // TODO Consider error here
+                    };
+                    if self.skip_file(filename) {
+                         return true
+                    }
+                    changeset.add_diff_hunk(d,hunk)
+                };
+
+                let mut diff_opts = DiffOptions::new();
+                diff_opts.include_unmodified(false)
+                    .ignore_filemode(true)
+                    .context_lines(0);
+                
+                let lh_tree = tp.left.map(|oid| repo.find_tree(oid).unwrap());
+                let rh_tree = tp.right.map(|oid| repo.find_tree(oid).unwrap());
+                
+                let diff = repo.diff_tree_to_tree(lh_tree.as_ref(),
+                                                  rh_tree.as_ref(),
+                                                  Some(&mut diff_opts));
+
+                diff.unwrap().foreach(&mut file_cb, None, Some(&mut hunk_cb), None).unwrap();
+            }
+
+            // pb.inc();
+
+            let mut changesets = changesets.lock().unwrap();
+            changesets.insert(tp.date_time, changeset);
+            tp.date_time
+        }).collect::<Vec<NaiveDateTime>>();
+
+        println!("After Treepairs! {:?}", nothing.len());
+        
+    }
     
     pub fn collect_samples(&self) -> Result<Vec<Sample>> {
         let ids = self.get_revwalk_ids()
             .chain_err(|| "Unable to obtain revwalk ids")?;
 
         let duration = Duration::seconds(self.options.interval);
-        let first_commit = self.find_commit(&ids[0])?;
-        let dt = self.commit_date_time(&first_commit)?;
+        let repo = Repository::open(&self.options.repo_path)
+            .chain_err(|| "Unable to open repo")?;
+        let first_commit = repo.find_commit(ids[0]).unwrap();
         
         let mut diff_opts = DiffOptions::new();
         diff_opts.include_unmodified(false)
@@ -290,7 +372,7 @@ impl Axe {
             .context_lines(0);
 
         let commits: Vec<Commit> = ids.iter().fold(vec![first_commit], |mut acc, &id| {
-            let commit = self.find_commit(&id).unwrap();
+            let commit = repo.find_commit(id).unwrap();
             let commit_dt = self.commit_date_time(&commit).unwrap();
             let last_dt = self.commit_date_time(&acc.last().unwrap()).unwrap();
 
@@ -302,25 +384,23 @@ impl Axe {
             acc
         });
 
-        struct TreeData<'a> {
-            tree: Option<Tree<'a>>,
-            date_time: NaiveDateTime
-        }
-
-        let mut trees: Vec<TreeData> = vec![TreeData{ tree: None, date_time: dt}];
-        trees.extend(commits.iter().map(|ref c|
-            TreeData{
-                tree: Some(c.tree().unwrap()),
-                date_time: self.commit_date_time(&c).unwrap()
+        let mut treepairs: Vec<TreePair> = vec![
+            TreePair{
+                left: None,
+                right: Some(commits[0].tree_id()),
+                date_time: self.commit_date_time(&commits[0]).unwrap()
+        }];
+        treepairs.extend(commits.windows(2).map(|pair| {
+            TreePair{
+                left: Some(pair[0].tree_id()),
+                right: Some(pair[1].tree_id()),
+                date_time: self.commit_date_time(&pair[1]).unwrap()
             }
-        ));
+        }));
 
-        let mut file_cb = |_d: DiffDelta, _n: f32| true;
-
-        
         let mut mb = MultiBar::new();
-        let mut pb = mb.create_bar(trees.len() as u64);
-        let mut pb2 = mb.create_bar(trees.len() as u64);
+        let mut pb = mb.create_bar(commits.len() as u64);
+        let mut pb2 = mb.create_bar(treepairs.len() as u64);
 
         thread::spawn(move || mb.listen());
 
@@ -357,46 +437,7 @@ impl Axe {
             samples_tx.send(acc).unwrap();
         });
         
-        for pair in trees.windows(2) {
-            
-            let mut changeset = Changeset::new(pair[1].date_time);
-            
-            {
-                let mut hunk_cb = |d: DiffDelta, hunk: DiffHunk| {
-                    let filename = match (d.new_file().path(), d.old_file().path()) {
-                        (_, Some(p)) => p.to_str().unwrap(),
-                        (Some(p), _) => p.to_str().unwrap(),
-                        _ => "" // TODO Consider error here
-                    };
-                    if self.skip_file(filename) {
-                        return true
-                    }
-                    changeset.add_diff_hunk(d,hunk)
-                };
-                
-                // TODO Helper function taking my references.... see Alex.
-                //   conversion traits
-                let diff = if pair[0].tree.is_none() {
-                    let rh_tree = pair[1].tree.as_ref().unwrap();
-                    
-                    self.repo.diff_tree_to_tree(None,
-                                                Some(&rh_tree),
-                                                Some(&mut diff_opts))
-                }else {
-                    let lh_tree = pair[0].tree.as_ref().unwrap();
-                    let rh_tree = pair[1].tree.as_ref().unwrap();
-                    
-                    self.repo.diff_tree_to_tree(Some(&lh_tree),
-                                                Some(&rh_tree),
-                                                Some(&mut diff_opts))
-                };
-                
-                diff.unwrap().foreach(&mut file_cb, None, Some(&mut hunk_cb), None)
-                    .unwrap();
-            }
-            pb.inc();
-            tx.send(changeset).unwrap();
-        };
+        self.build_changesets(&treepairs, tx.clone());
         drop(tx);
 
         pb.finish();
