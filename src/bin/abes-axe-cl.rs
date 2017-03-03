@@ -1,14 +1,11 @@
 // Setup error-chain
 // `error_chain!` can recurse deeply
 #![recursion_limit = "1024"]
-extern crate chrono;
-extern crate clap;
-#[macro_use] 
+#[macro_use]
 extern crate error_chain;
-extern crate git2;
-extern crate itertools;
-extern crate pbr;
-extern crate regex;
+extern crate abes_axe;
+extern crate clap;
+
 use clap::{App, Arg};
 
 // We'll put our errors in an `errors` module, and other modules in
@@ -20,11 +17,8 @@ mod errors {
 }
 use errors::*;
 
-mod axe;
-use axe::Axe;
-
 fn run(app_config: App) -> Result<()> {
-    let axe = Axe::new(app_config)
+    let axe = abes_axe::Axe::new(app_config)
         .chain_err(|| "Couldn't build Ax structure")?;
     
     axe.make_csv()

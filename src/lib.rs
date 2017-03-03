@@ -1,12 +1,30 @@
+// Setup error-chain
+// `error_chain!` can recurse deeply
+#![recursion_limit = "1024"]
+extern crate chrono;
+extern crate clap;
+#[macro_use] 
+extern crate error_chain;
+extern crate git2;
+extern crate itertools;
+extern crate regex;
+
+// We'll put our errors in an `errors` module, and other modules in
+// this crate will `use errors::*;` to get access to everything
+// `error_chain!` creates.
+mod errors {
+    // Create the Error, ErrorKind, ResultExt, and Result types
+    error_chain!{}
+}
+use errors::*;
+
 use git2::{SORT_TIME, Commit, Repository, Oid, Delta, DiffDelta, DiffFile, DiffHunk, DiffOptions, Tree};
 use std::collections::{HashMap, HashSet};
 use clap::App;
-use errors::*;
 use chrono::{Duration, NaiveDateTime};
 use std::fs::File;
 use std::io::Write;
 use regex::Regex;
-use pbr::MultiBar;
 use std::thread;
 use itertools::Itertools;
 use std::sync::Arc;
@@ -318,16 +336,16 @@ impl Axe {
         let mut file_cb = |_d: DiffDelta, _n: f32| true;
 
         
-        let mut mb = MultiBar::new();
-        let mut pb = mb.create_bar(trees.len() as u64);
-        let mut pb2 = mb.create_bar(trees.len() as u64);
+        // let mut mb = MultiBar::new();
+        // let mut pb = mb.create_bar(trees.len() as u64);
+        // let mut pb2 = mb.create_bar(trees.len() as u64);
 
-        thread::spawn(move || mb.listen());
+        // thread::spawn(move || mb.listen());
 
-        pb.message("Collecting changesets: ");
-        pb.format("╢▌▌░╟");
-        pb2.message("Processing changesets: ");
-        pb2.format("╢▌▌░╟");
+        // pb.message("Collecting changesets: ");
+        // pb.format("╢▌▌░╟");
+        // pb2.message("Processing changesets: ");
+        // pb2.format("╢▌▌░╟");
 
         let (tx, rx) : (Sender<Changeset>, Receiver<Changeset>) = mpsc::channel();
         let (samples_tx, samples_rx) : (Sender<Vec<Sample>>, Receiver<Vec<Sample>>)
@@ -348,12 +366,12 @@ impl Axe {
 
                 let cohort = changeset.date_time.format(&cohort_fmt).to_string();
 
-                pb2.inc();
+                // pb2.inc();
 
                 acc.push(sample.add_changeset(&changeset, &cohort).to_owned())
             }
 
-            pb2.finish();
+            // pb2.finish();
             samples_tx.send(acc).unwrap();
         });
         
@@ -394,12 +412,12 @@ impl Axe {
                 diff.unwrap().foreach(&mut file_cb, None, Some(&mut hunk_cb), None)
                     .unwrap();
             }
-            pb.inc();
+            // pb.inc();
             tx.send(changeset).unwrap();
         };
         drop(tx);
 
-        pb.finish();
+        //pb.finish();
 
         let samples = samples_rx.recv().unwrap();
         
