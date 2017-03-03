@@ -6,7 +6,6 @@ extern crate clap;
 #[macro_use] 
 extern crate error_chain;
 extern crate git2;
-#[macro_use]
 extern crate itertools;
 extern crate pbr;
 extern crate regex;
