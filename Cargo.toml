@@ -9,6 +9,6 @@ clap = "2.*"
 error-chain = "0.7.1"
 git2 = "0.6"
 itertools = "0.5.8"
-pbr = { git = "https://github.com/a8m/pb" }
+pbr = { git = "https://github.com/bnbeckwith/pb" }
 rayon = "0.6.0"
 regex = "*"
