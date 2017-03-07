@@ -1,6 +1,7 @@
 // Setup error-chain
 // `error_chain!` can recurse deeply
 #![recursion_limit = "1024"]
+
 extern crate chrono;
 extern crate clap;
 #[macro_use] 
@@ -8,6 +9,12 @@ extern crate error_chain;
 extern crate git2;
 extern crate itertools;
 extern crate regex;
+extern crate futures;
+extern crate parallel_event_emitter;
+
+mod options;
+use options::Options;
+
 
 // We'll put our errors in an `errors` module, and other modules in
 // this crate will `use errors::*;` to get access to everything
@@ -17,19 +24,16 @@ mod errors {
     error_chain!{}
 }
 use errors::*;
-
 use git2::{SORT_TIME, Commit, Repository, Oid, Delta, DiffDelta, DiffFile, DiffHunk, DiffOptions, Tree};
 use std::collections::{HashMap, HashSet};
-use clap::App;
 use chrono::{Duration, NaiveDateTime};
 use std::fs::File;
 use std::io::Write;
-use regex::Regex;
 use std::thread;
-use itertools::Itertools;
 use std::sync::Arc;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
+use clap::App;
 
 type Cohort = String;
 type Lines = Arc<Vec<Cohort>>;
@@ -169,66 +173,26 @@ impl Sample {
     
 }
 
-#[derive(Clone)]
-struct Options {
-    interval: i64,
-    repo_path: String,
-    cohort_fmt: String,
-    ignore: Option<Regex>,
-    only: Option<Regex>
-}
-
-impl Options {
-    pub fn new(app_config: App) -> Options {
-        let matches = app_config.get_matches();
-        let interval = matches.value_of("interval")
-            .unwrap()
-            .parse::<i64>()
-            .ok()
-            .unwrap();
-        let repo_path = matches.value_of("REPO").unwrap();
-        let cohort_fmt = matches.value_of("cohortfmt").unwrap();
-        let ignore_patterns = matches.values_of("ignore").map(|iter| {
-            let re: String = iter.map(|s| String::from(s))
-                .intersperse(String::from("|"))
-                .collect();
-            Regex::new(re.as_str()).unwrap()
-        });
-        let only_patterns = matches.values_of("only").map(|iter| {
-            let re: String = iter.map(|s| String::from(s))
-                .intersperse(String::from("|"))
-                .collect();
-            Regex::new(re.as_str()).unwrap()
-        });
-        
-        Options {
-            interval: interval,
-            repo_path: repo_path.to_owned(),
-            cohort_fmt: cohort_fmt.to_owned(),
-            ignore: ignore_patterns,
-            only: only_patterns
-        }
-    }
-}
-
 pub struct Axe {
-    repo: Repository,
     options: Options,
 }
 
 impl Axe {
     pub fn new(app_config: App) -> Result<Axe> {
         let options = Options::new(app_config);
-        let repo = Repository::open(options.clone().repo_path)
-            .chain_err(|| "Couldn't open repository")?;
         Ok(Axe {
-            repo: repo, 
             options: options
         })
     }
 
+    fn open_repo(&self) -> Result<Repository> {
+        Repository::open(self.options.repo_path.clone())
+            .chain_err(|| "Couldn't open repository")
+    }
+    
     fn get_revwalk_ids(&self) -> Result<Vec<Oid>> {
-        let mut revwalk = self.repo.revwalk()
+        let repo = self.open_repo()?;
+        let mut revwalk = repo.revwalk()
             .chain_err(|| "Unable to revwalk")?;
         revwalk.set_sorting(SORT_TIME);
         revwalk.push_head()
@@ -241,11 +205,6 @@ impl Axe {
 
     fn commit_date_time(&self, commit: &Commit) -> Result<NaiveDateTime> {
         Ok(NaiveDateTime::from_num_seconds_from_unix_epoch(commit.time().seconds(), 0))
-    }
-
-    fn find_commit(&self, oid: &Oid) -> Result<Commit> {
-        self.repo.find_commit(*oid)
-            .chain_err(|| format!("Couldn't find commit for id: {}", oid))
     }
 
     pub fn cohort_name(&self, dt: &NaiveDateTime) -> String {
@@ -298,8 +257,10 @@ impl Axe {
         let ids = self.get_revwalk_ids()
             .chain_err(|| "Unable to obtain revwalk ids")?;
 
+        let repo = self.open_repo()?;
         let duration = Duration::seconds(self.options.interval);
-        let first_commit = self.find_commit(&ids[0])?;
+        let first_commit = repo.find_commit(ids[0])
+            .chain_err(|| format!("Couldn't find commit for id: {}", ids[0]))?;
         let dt = self.commit_date_time(&first_commit)?;
         
         let mut diff_opts = DiffOptions::new();
@@ -308,7 +269,7 @@ impl Axe {
             .context_lines(0);
 
         let commits: Vec<Commit> = ids.iter().fold(vec![first_commit], |mut acc, &id| {
-            let commit = self.find_commit(&id).unwrap();
+            let commit = repo.find_commit(id).unwrap();
             let commit_dt = self.commit_date_time(&commit).unwrap();
             let last_dt = self.commit_date_time(&acc.last().unwrap()).unwrap();
 
@@ -335,7 +296,23 @@ impl Axe {
 
         let mut file_cb = |_d: DiffDelta, _n: f32| true;
 
+        // struct Options {
+        //     ...,
+        //     eventBus: EventBus,
+        //     collectingChangesetCallbacks: Vec<Box<Fn<_>>>,
+        //     ...
+        // }
+        // updateTerm = |progress| println!("Progress: {}", progress);
+        // options.collectingChangesetCallbacks.push(updateTerm);
+        // options.nextStepCallbacks.push(updateTerm);
         
+        // options.progressCallbacks.push(|progress| updateGUI!("Progress: {}", progress));
+        // options.eventBus.subscribe(Status.ChangesetCollection, updateTerm);
+        
+        // foreach(callback in options.collectingChangesetCallbacks) {
+        //     callback(trees.len());
+        // }
+        // options.eventBus.publish(Status.ChangesetCollection, 47);
         // let mut mb = MultiBar::new();
         // let mut pb = mb.create_bar(trees.len() as u64);
         // let mut pb2 = mb.create_bar(trees.len() as u64);
@@ -351,9 +328,7 @@ impl Axe {
         let (samples_tx, samples_rx) : (Sender<Vec<Sample>>, Receiver<Vec<Sample>>)
             = mpsc::channel();
 
-
         let cohort_fmt = self.options.cohort_fmt.clone();
-        
         thread::spawn(move || {
             let mut acc: Vec<Sample> = Vec::new();
             for changeset in rx.iter() {
@@ -366,17 +341,15 @@ impl Axe {
 
                 let cohort = changeset.date_time.format(&cohort_fmt).to_string();
 
-                // pb2.inc();
-
                 acc.push(sample.add_changeset(&changeset, &cohort).to_owned())
             }
 
-            // pb2.finish();
             samples_tx.send(acc).unwrap();
         });
-        
+
+        let repo = self.open_repo()?;
         for pair in trees.windows(2) {
-            
+                
             let mut changeset = Changeset::new(pair[1].date_time);
             
             {
@@ -392,19 +365,17 @@ impl Axe {
                     changeset.add_diff_hunk(d,hunk)
                 };
                 
-                // TODO Helper function taking my references.... see Alex.
-                //   conversion traits
                 let diff = if pair[0].tree.is_none() {
                     let rh_tree = pair[1].tree.as_ref().unwrap();
                     
-                    self.repo.diff_tree_to_tree(None,
+                    repo.diff_tree_to_tree(None,
                                                 Some(&rh_tree),
                                                 Some(&mut diff_opts))
                 }else {
                     let lh_tree = pair[0].tree.as_ref().unwrap();
                     let rh_tree = pair[1].tree.as_ref().unwrap();
                     
-                    self.repo.diff_tree_to_tree(Some(&lh_tree),
+                    repo.diff_tree_to_tree(Some(&lh_tree),
                                                 Some(&rh_tree),
                                                 Some(&mut diff_opts))
                 };
@@ -412,12 +383,10 @@ impl Axe {
                 diff.unwrap().foreach(&mut file_cb, None, Some(&mut hunk_cb), None)
                     .unwrap();
             }
-            // pb.inc();
             tx.send(changeset).unwrap();
         };
-        drop(tx);
 
-        //pb.finish();
+        drop(tx);
 
         let samples = samples_rx.recv().unwrap();
         
