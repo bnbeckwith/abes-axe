@@ -73,6 +73,34 @@ impl Axe {
         dt.format(&self.options.cohort_fmt).to_string()
     }
 
+    pub fn csv(&self) -> Result<String> {
+        let samples = self.collect_samples()
+            .chain_err(|| "Couldn't collect samples")?;
+
+        let mut cohorts : Vec<String> = samples
+            .iter()
+            .map(|s| self.cohort_name(&s.date_time))
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        cohorts.sort();
+
+        let mut csv = String::from(
+            format!("DateTime{}\n", cohorts.iter().map(|k| format!(",{}", k)).collect::<String>())
+        );
+
+        for sample in samples {
+            let data = cohorts.iter()
+                .map(|c| format!(",{}", sample.count_cohort_lines(&c)))
+                .collect::<String>();
+            let record = format!("{}{}\n", sample.date_time, data);
+            csv.push_str(&record);
+        }
+
+        Ok(csv)
+    }
+
     pub fn make_csv(&self) -> Result<()> {
         let samples = self.collect_samples()
             .chain_err(|| "Couldn't collect samples")?;
