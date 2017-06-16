@@ -16,9 +16,10 @@ mod errors {
     error_chain!{}
 }
 use errors::*;
+use abes_axe::options::Options;
 
 fn run(app_config: App) -> Result<()> {
-    let axe = abes_axe::Axe::new(app_config)
+    let axe = abes_axe::Axe::new(Some(Options::from_config(app_config)))
         .chain_err(|| "Couldn't build Ax structure")?;
     
     axe.make_csv()

@@ -8,11 +8,23 @@ pub struct Options {
     pub repo_path: String,
     pub cohort_fmt: String,
     pub ignore: Option<Regex>,
-    pub only: Option<Regex>
+    pub only: Option<Regex>,
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options {
+            interval: 604800,
+            repo_path: String::from(""),
+            cohort_fmt: String::from("%Y"),
+            ignore: None,
+            only: None,
+        }
+    }
 }
 
 impl Options {
-    pub fn new(app_config: App) -> Options {
+    pub fn from_config(app_config: App) -> Options {
         let matches = app_config.get_matches();
         let interval = matches.value_of("interval")
             .unwrap()
@@ -33,13 +45,13 @@ impl Options {
                 .collect();
             Regex::new(re.as_str()).unwrap()
         });
-        
+
         Options {
             interval: interval,
             repo_path: repo_path.to_owned(),
             cohort_fmt: cohort_fmt.to_owned(),
             ignore: ignore_patterns,
-            only: only_patterns
+            only: only_patterns,
         }
     }
 }
