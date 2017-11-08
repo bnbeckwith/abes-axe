@@ -34,7 +34,7 @@ fn run(app_config: App) -> Result<()> {
 }
 
 fn main() {
-    let app_config = App::new("abes-ax")
+    let app_config = App::new("abes-axe")
         .version("0.1")
         .author("Benjamin Beckwith")
         .arg(Arg::with_name("cohortfmt")
