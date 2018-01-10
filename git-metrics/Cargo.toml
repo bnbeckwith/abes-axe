@@ -1,16 +1,14 @@
 [package]
-name = "abes-axe"
+name = "git-metrics"
 version = "0.1.0"
 authors = ["Ben Beckwith <bnbeckwith@gmail.com>"]
 
 [dependencies]
 clap = "2.*"
+chrono = "0.4.*"
 error-chain = "0.11.*"
 git2 = "0.6"
 itertools = "0.7.2"
 pbr = "1.0.0"
 rayon = "0.9.0"
 regex = "*"
-git-metrics = { path = "git-metrics" }
-
-[workspace]

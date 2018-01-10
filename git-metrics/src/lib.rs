@@ -1,209 +1,47 @@
-use git2::{SORT_TIME, Commit, Repository, Oid, Delta, DiffDelta, DiffFile, DiffHunk, DiffOptions, Tree};
-use std::collections::{HashMap, HashSet};
-use clap::App;
+extern crate clap;
+extern crate git2;
+extern crate chrono;
+extern crate regex;
+extern crate pbr;
+extern crate itertools;
+#[macro_use]
+extern crate error_chain;
+
+mod errors{
+    error_chain!{}
+}
 use errors::*;
+
+use git2::{SORT_TIME, Commit, Repository, Oid, DiffDelta, DiffHunk, DiffOptions, Tree};
+use std::collections::HashSet;
+use clap::App;
 use chrono::{Duration, NaiveDateTime};
 use std::fs::File;
 use std::io::Write;
-use regex::Regex;
 use pbr::MultiBar;
 use std::thread;
-use itertools::Itertools;
-use std::sync::Arc;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
 
-type Cohort = String;
-type Lines = Arc<Vec<Cohort>>;
-type FileName = String;
-type FileMap = HashMap<FileName, Lines>;
+mod sample;
+mod change;
+mod options;
 
-enum Change {
-    Add {filename: String, start: u32, length: u32},
-    Delete {filename: String, start: u32, length: u32},
-    DeleteFile {filename: String},
-    AddFile {filename: String, length: u32}
-}
+use sample::Sample;
+use change::Changeset;
+use options::Options;
 
-pub struct Changeset {
-    date_time: NaiveDateTime,
-    changes: Vec<Change>  
-}
-
-impl Changeset { 
-    pub fn new(dt: NaiveDateTime) -> Changeset {
-        Changeset{
-            date_time: dt,
-            changes: Vec::new()
-        }
-    }
-
-    pub fn process_added(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
-        let filename = Sample::filename(&d.new_file());
-        self.changes.push(Change::AddFile{filename: filename, length: h.new_lines()});
-        true
-    }
-
-    pub fn process_deleted(&mut self, d: DiffDelta, _h: DiffHunk) -> bool {
-        let filename = Sample::filename(&d.old_file());
-        self.changes.push(Change::DeleteFile{filename: filename});
-        true
-    }
-    
-    pub fn process_modified(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
-        let filename = Sample::filename(&d.new_file());
-        let start = if h.new_start() > 0 {
-            h.new_start() -1
-        } else {0};
-        let old_end = start + h.old_lines();
-        let new_end = start + h.new_lines();
-        if h.old_lines() > 0 {
-            self.changes.push(Change::Delete{filename: filename.clone(),
-                                             start: start,
-                                             length: old_end-start});
-        }
-        if h.new_lines() > 0 {
-            self.changes.push(Change::Add{filename: filename.clone(),
-                                          start: start,
-                                          length: new_end-start});
-        }
-        true
-    }
-
-    pub fn add_diff_hunk(&mut self, d: DiffDelta, h: DiffHunk) -> bool {
-        match d.status() {
-            Delta::Added =>    self.process_added(d,h),
-            Delta::Deleted =>  self.process_deleted(d,h),
-            Delta::Modified => self.process_modified(d,h),
-            _ => {
-                println!("Unsupported status!");
-                false
-            }
-            
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct Sample {
-    pub date_time: NaiveDateTime,
-    files: FileMap
-}
-
-impl Sample {
-
-    pub fn new(dt: &NaiveDateTime) -> Sample {
-        Sample {
-            date_time: *dt,
-            files: HashMap::new()
-        }
-    }
-
-    pub fn clone_and_date(&self, dt: &NaiveDateTime) -> Sample {
-        let mut sample = self.clone();
-        sample.date_time = *dt;
-        sample
-    }
-
-    pub fn add_changeset(&mut self, changeset: &Changeset, cohort: &String) -> &mut Sample {
-        for change in changeset.changes.iter() {
-            match change {
-                &Change::Add { ref filename, start, length } =>
-                {
-                    let mut lines_rc = self.files.entry(filename.to_owned())
-                        .or_insert(Arc::new(Vec::new()));
-                    let end = Arc::make_mut(&mut lines_rc).split_off(start as usize);
-                    Arc::make_mut(&mut lines_rc)
-                        .extend_from_slice(&vec![cohort.to_owned(); length as usize]);
-                    Arc::make_mut(&mut lines_rc).extend_from_slice(end.as_slice());
-                },
-                &Change::Delete { ref filename, start, length } =>
-                {
-                    let mut lines = self.files.entry(filename.to_owned())
-                        .or_insert(Arc::new(Vec::new()));
-                    let start = start as usize;
-                    let end = start + length as usize;
-                    Arc::make_mut(lines).drain(start..end);
-                },
-                &Change::AddFile { ref filename, length } =>
-                {
-                    self.files.insert(filename.to_owned(),
-                                      Arc::new(vec![cohort.to_owned(); length as usize]));
-                },
-                &Change::DeleteFile { ref filename } =>
-                {
-                    self.files.remove(filename);
-                }
-            }
-        };
-        self
-    }
-    
-    fn filename(f: &DiffFile) -> FileName {
-        String::from(f.path().map(|e| e.to_str().unwrap()).unwrap())
-    }
-
-    fn count_cohort_lines(&self, cohort: &String) -> i64 {
-        self.files.values()
-            .map(|v| v.iter().filter(|v| *v == cohort).count() )
-            .fold(0, |acc, v| acc + v) as i64
-    }
-    
-}
-
-#[derive(Clone)]
-struct Options {
-    interval: i64,
-    repo_path: String,
-    cohort_fmt: String,
-    ignore: Option<Regex>,
-    only: Option<Regex>
-}
-
-impl Options {
-    pub fn new(app_config: App) -> Options {
-        let matches = app_config.get_matches();
-        let interval = matches.value_of("interval")
-            .unwrap()
-            .parse::<i64>()
-            .ok()
-            .unwrap();
-        let repo_path = matches.value_of("REPO").unwrap();
-        let cohort_fmt = matches.value_of("cohortfmt").unwrap();
-        let ignore_patterns = matches.values_of("ignore").map(|iter| {
-            let re: String = iter.map(|s| String::from(s))
-                .intersperse(String::from("|"))
-                .collect();
-            Regex::new(re.as_str()).unwrap()
-        });
-        let only_patterns = matches.values_of("only").map(|iter| {
-            let re: String = iter.map(|s| String::from(s))
-                .intersperse(String::from("|"))
-                .collect();
-            Regex::new(re.as_str()).unwrap()
-        });
-        
-        Options {
-            interval: interval,
-            repo_path: repo_path.to_owned(),
-            cohort_fmt: cohort_fmt.to_owned(),
-            ignore: ignore_patterns,
-            only: only_patterns
-        }
-    }
-}
-
-pub struct Axe {
+pub struct Metrics {
     repo: Repository,
     options: Options,
 }
 
-impl Axe {
-    pub fn new(app_config: App) -> Result<Axe> {
+impl Metrics {
+    pub fn new(app_config: App) -> Result<Metrics> {
         let options = Options::new(app_config);
-        let repo = Repository::open(options.clone().repo_path)
+        let repo = Repository::open(options.path())
             .chain_err(|| "Couldn't open repository")?;
-        Ok(Axe {
+        Ok(Metrics {
             repo: repo, 
             options: options
         })
@@ -222,7 +60,7 @@ impl Axe {
     }
 
     fn commit_date_time(&self, commit: &Commit) -> Result<NaiveDateTime> {
-        Ok(NaiveDateTime::from_num_seconds_from_unix_epoch(commit.time().seconds(), 0))
+        Ok(NaiveDateTime::from_timestamp(commit.time().seconds(), 0))
     }
 
     fn find_commit(&self, oid: &Oid) -> Result<Commit> {
@@ -231,7 +69,7 @@ impl Axe {
     }
 
     pub fn cohort_name(&self, dt: &NaiveDateTime) -> String {
-        dt.format(&self.options.cohort_fmt).to_string()
+        dt.format(&self.options.format()).to_string()
     }
 
     pub fn make_csv(&self) -> Result<()> {
@@ -265,14 +103,8 @@ impl Axe {
     }
 
     fn skip_file(&self, filename: &str) -> bool {
-        let ignore = match self.options.ignore {
-            None => false,
-            Some(ref re) => re.is_match(filename)
-        };
-        let keep = match self.options.only {
-            None => true,
-            Some(ref re) => re.is_match(filename)
-        };
+        let ignore = self.options.should_ignore(filename);
+        let keep = self.options.should_keep(filename);
         ignore || !keep
     }
     
@@ -280,7 +112,7 @@ impl Axe {
         let ids = self.get_revwalk_ids()
             .chain_err(|| "Unable to obtain revwalk ids")?;
 
-        let duration = Duration::seconds(self.options.interval);
+        let duration = Duration::seconds(self.options.interval());
         let first_commit = self.find_commit(&ids[0])?;
         let dt = self.commit_date_time(&first_commit)?;
         
@@ -334,7 +166,7 @@ impl Axe {
             = mpsc::channel();
 
 
-        let cohort_fmt = self.options.cohort_fmt.clone();
+        let cohort_fmt = self.options.format();
         
         thread::spawn(move || {
             let mut acc: Vec<Sample> = Vec::new();

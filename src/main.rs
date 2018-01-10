@@ -1,7 +1,6 @@
 // Setup error-chain
 // `error_chain!` can recurse deeply
 #![recursion_limit = "1024"]
-extern crate chrono;
 extern crate clap;
 #[macro_use] 
 extern crate error_chain;
@@ -9,6 +8,7 @@ extern crate git2;
 extern crate itertools;
 extern crate pbr;
 extern crate regex;
+extern crate git_metrics;
 use clap::{App, Arg};
 
 // We'll put our errors in an `errors` module, and other modules in
@@ -20,14 +20,13 @@ mod errors {
 }
 use errors::*;
 
-mod axe;
-use axe::Axe;
+use git_metrics::Metrics;
 
 fn run(app_config: App) -> Result<()> {
-    let axe = Axe::new(app_config)
+    let metrics = Metrics::new(app_config)
         .chain_err(|| "Couldn't build Ax structure")?;
     
-    axe.make_csv()
+    metrics.make_csv()
         .chain_err(|| "CSV creation failed")?;
     
     Ok(())
